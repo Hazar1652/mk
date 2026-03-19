@@ -1,0 +1,103 @@
+#include <ESP8266WiFi.h>
+#include <ESP8266WebServer.h>
+
+// Визначення пінів (згідно з твоїм скріншотом GPIO14 для кнопки)
+#define LED_PIN_R 0
+#define LED_PIN_Y 2    // Змінив на 2, бо 14 тепер кнопка
+#define LED_PIN_G 12
+#define BUTTON    14   // GPIO14 згідно з таблицею
+
+ESP8266WebServer server(80);
+
+// Змінні для логіки таймера
+unsigned long pauseStartTime = 0;
+bool isPaused = false;
+const unsigned long pauseDuration = 15000; // 15 секунд
+
+uint32_t lastStepTime = 0;
+int8_t stepIndex = 0;
+const uint16_t stepDelay = 350;
+
+void handleRoot() {
+  String html = "<html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1'>";
+  html += "<style>body{text-align:center; background:#222; color:#fff; font-family:sans-serif;}";
+  html += ".btn{width:150px; height:150px; border-radius:50%; border:none; background:#ff4444; color:#fff; font-size:20px; font-weight:bold; cursor:pointer;}";
+  html += "</style></head><body>";
+  html += "<h2>WEMOS CONTROL</h2>";
+  html += "<p>Статус: " + String(isPaused ? "ПАУЗА (15с)" : "ПРАЦЮЄ") + "</p>";
+  html += "<button class='btn' onclick=\"fetch('/trigger')\">STOP 15s</button>";
+  html += "<script>function trigger(){fetch('/trigger');}</script>";
+  html += "</body></html>";
+  server.send(200, "text/html", html);
+}
+
+void handleTrigger() {
+  isPaused = true;
+  pauseStartTime = millis();
+  server.send(200, "text/plain", "Paused for 15s");
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  pinMode(LED_PIN_R, OUTPUT);
+  pinMode(LED_PIN_Y, OUTPUT);
+  pinMode(LED_PIN_G, OUTPUT);
+
+  // External Pull-down передбачає, що при натисканні буде HIGH
+  pinMode(BUTTON, INPUT);
+
+  WiFi.mode(WIFI_STA);
+  WiFi.begin("032", "deffi723723");
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  server.on("/", handleRoot);
+  server.on("/trigger", handleTrigger);
+  server.begin();
+  Serial.println("\nReady. IP: " + WiFi.localIP().toString());
+}
+
+void loop() {
+  server.handleClient();
+
+  // 1. Перевірка фізичної кнопки (GPIO14)
+  // Якщо Pull-down, то натискання = HIGH
+  if (digitalRead(BUTTON) == HIGH && !isPaused) {
+    isPaused = true;
+    pauseStartTime = millis();
+    Serial.println("Button pressed: Pause 15s");
+  }
+
+  // 2. Логіка таймера (якщо в паузі)
+  if (isPaused) {
+    if (millis() - pauseStartTime >= pauseDuration) {
+      isPaused = false;
+      Serial.println("Resume switching");
+    } else {
+      // Під час паузи діоди просто горять (або можна загасити)
+      // В даному випадку вони просто "застигають" у поточному стані
+      return;
+    }
+  }
+
+  // 3. Логіка перемикання (якщо не в паузі)
+  if (millis() - lastStepTime >= stepDelay) {
+    lastStepTime = millis();
+
+    // Гасимо всі перед наступним кроком
+    digitalWrite(LED_PIN_R, LOW);
+    digitalWrite(LED_PIN_Y, LOW);
+    digitalWrite(LED_PIN_G, LOW);
+
+    // Проста черга: R -> Y -> G
+    if (stepIndex == 0) digitalWrite(LED_PIN_R, HIGH);
+    else if (stepIndex == 1) digitalWrite(LED_PIN_Y, HIGH);
+    else if (stepIndex == 2) digitalWrite(LED_PIN_G, HIGH);
+
+    stepIndex = (stepIndex + 1) % 3;
+  }
+}
