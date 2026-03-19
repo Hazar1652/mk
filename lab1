@@ -9,7 +9,7 @@
 
 ESP8266WebServer server(80);
 
-// Змінні для логіки таймера
+// ЗЗмінні для логіки таймера таймера
 unsigned long pauseStartTime = 0;
 bool isPaused = false;
 const unsigned long pauseDuration = 15000; // 15 секунд
