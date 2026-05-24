@@ -1,0 +1,178 @@
+#include <ESP8266WiFi.h>
+#include <WiFiClientSecure.h>
+#include <ESP8266WebServer.h>
+#include <UniversalTelegramBot.h>
+#include <ArduinoJson.h>
+
+// --- Налаштування мережі ---
+const char* ssid = "iPhone";
+const char* password = "Hazar10877";
+
+// --- Telegram налаштування ---
+const String botToken = "8952953153:AAFobF52cVLMw9bKosSfuos5ZMHeLPoIFz8";
+const String chatId = "735363175"; // Твій ID
+
+WiFiClientSecure client_secure;
+UniversalTelegramBot bot(botToken, client_secure);
+ESP8266WebServer server(80);
+
+// --- Піни ---
+const int mq2Pin = D1; const int buttonPin = D2;
+const int greenLed = D4; const int redLed = D5;
+const int buzzerPin = D6; const int relayPin = D7;
+
+// --- Стан системи ---
+bool isSystemInAlarm = false;
+bool manualResetRequired = false;
+bool testModeActive = false;
+unsigned long testEndTime = 0;
+unsigned long lastBotCheck = 0;
+const unsigned long botInterval = 2000; // Перевірка ТГ кожні 2 сек
+
+// --- ФУНКЦІЇ КЕРУВАННЯ (Об'єднані для Web та TG) ---
+
+void clearAlarm(String source) {
+  // 1. МИТТЄВА ФІЗИКА (Жодної затримки!)
+  isSystemInAlarm = false; manualResetRequired = false; testModeActive = false;
+  digitalWrite(buzzerPin, LOW); digitalWrite(relayPin, LOW);
+  digitalWrite(redLed, LOW); digitalWrite(greenLed, HIGH);
+
+  Serial.println("--- SYSTEM RESET BY " + source + " ---");
+
+  // 2. СПОВІЩЕННЯ (Після того як залізо замовкло)
+  bot.sendMessage(chatId, "✅ СИСТЕМА СКИНУТА (" + source + ")", "");
+}
+
+void activateTest(String source) {
+  isSystemInAlarm = true; testModeActive = true; testEndTime = millis() + 15000;
+  digitalWrite(buzzerPin, HIGH); digitalWrite(relayPin, HIGH);
+  digitalWrite(redLed, HIGH); digitalWrite(greenLed, LOW);
+
+  bot.sendMessage(chatId, "🛠 ЗАПУЩЕНО ТЕСТ (" + source + ")", "");
+}
+
+// --- ОБРОБКА TELEGRAM ---
+void handleNewMessages(int numNewMessages) {
+  for (int i = 0; i < numNewMessages; i++) {
+    String text = bot.messages[i].text;
+    if (text == "/reset") clearAlarm("Telegram");
+    if (text == "/test") activateTest("Telegram");
+    if (text == "/status") {
+      String msg = isSystemInAlarm ? "🚨 ТРИВОГА!" : "✅ СТАН: НОРМА";
+      bot.sendMessage(chatId, msg, "");
+    }
+  }
+}
+
+// --- ОБРОБКА WEB ---
+void handleRoot() {
+  String html = R"=====(
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1.0'>
+    <title>GUARD PRO CONTROL</title>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; background: #0f0c29; background: linear-gradient(135deg, #0f0c29 0%, #302b63 100%); color: white; margin: 0; display: flex; align-items: center; justify-content: center; height: 100vh; }
+        .container { background: rgba(255, 255, 255, 0.05); backdrop-filter: blur(15px); padding: 40px; border-radius: 30px; width: 320px; text-align: center; border: 1px solid rgba(255,255,255,0.1); transition: 0.5s; }
+        .alarm-active { border: 1px solid #e74c3c; box-shadow: 0 0 40px rgba(231, 76, 60, 0.5); animation: pulse 1.5s infinite; }
+        @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.03); } 100% { transform: scale(1); } }
+        h1 { font-size: 26px; color: #00d2ff; }
+        .status-box { padding: 20px; border-radius: 15px; margin-bottom: 30px; font-weight: bold; }
+        .ok { border: 1px solid #2ecc71; color: #2ecc71; }
+        .danger { border: 1px solid #e74c3c; color: #e74c3c; animation: shake 0.2s infinite; }
+        @keyframes shake { 0%, 100% { transform: translateX(0); } 50% { transform: translateX(3px); } }
+        .btn { width: 100%; padding: 18px; border: none; border-radius: 15px; font-weight: bold; cursor: pointer; color: white; text-transform: uppercase; }
+        .btn-reset { background: #e67e22; } .btn-test { background: #3498db; }
+    </style>
+</head>
+<body>
+    <div id='card' class='container'>
+        <h1>GUARD PRO</h1>
+        <div id='st' class='status-box ok'>ПЕРЕВІРКА...</div>
+        <button id='tBtn' class='btn btn-test' onclick='fetch("/test")'>ТЕСТ СИСТЕМИ</button>
+        <button id='rBtn' class='btn btn-reset' style='display:none' onclick='fetch("/reset")'>СКИНУТИ</button>
+    </div>
+    <script>
+        setInterval(() => {
+            fetch('/status').then(r => r.json()).then(d => {
+                const s = document.getElementById('st');
+                const c = document.getElementById('card');
+                if(d.alarm) {
+                    s.innerText = '🚨 ТРИВОГА!'; s.className = 'status-box danger';
+                    c.classList.add('alarm-active');
+                    document.getElementById('tBtn').style.display = 'none';
+                    document.getElementById('rBtn').style.display = 'block';
+                } else {
+                    s.innerText = '✅ В НОРМІ'; s.className = 'status-box ok';
+                    c.classList.remove('alarm-active');
+                    document.getElementById('tBtn').style.display = 'block';
+                    document.getElementById('rBtn').style.display = 'none';
+                }
+            });
+        }, 1000);
+    </script>
+</body>
+</html>
+)=====";
+  server.send(200, "text/html", html);
+}
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(mq2Pin, INPUT); pinMode(buttonPin, INPUT_PULLUP);
+  pinMode(greenLed, OUTPUT); pinMode(redLed, OUTPUT);
+  pinMode(buzzerPin, OUTPUT); pinMode(relayPin, OUTPUT);
+  digitalWrite(greenLed, HIGH);
+
+  client_secure.setInsecure();
+  WiFi.begin(ssid, password);
+
+  // PuTTY показуватиме крапки, поки не підключиться
+  while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
+
+  Serial.println("\n--- CONNECTED ---");
+  Serial.print("IP ADDR: "); Serial.println(WiFi.localIP());
+
+  server.on("/", handleRoot);
+  server.on("/status", [](){
+    String json = "{\"alarm\":" + String(isSystemInAlarm ? "true" : "false") + "}";
+    server.send(200, "application/json", json);
+  });
+  server.on("/reset", [](){ clearAlarm("Web Panel"); server.send(200, "text/plain", "OK"); });
+  server.on("/test", [](){ activateTest("Web Panel"); server.send(200, "text/plain", "OK"); });
+
+  server.begin();
+  bot.sendMessage(chatId, "🛡 GUARD PRO ONLINE\nIP: " + WiFi.localIP().toString(), "");
+}
+
+void loop() {
+  server.handleClient();
+
+  // Telegram опитування
+  if (millis() - lastBotCheck > botInterval) {
+    int num = bot.getUpdates(bot.last_message_received + 1);
+    while (num) { handleNewMessages(num); num = bot.getUpdates(bot.last_message_received + 1); }
+    lastBotCheck = millis();
+  }
+
+  // Робота датчика
+  if (digitalRead(mq2Pin) == LOW && !manualResetRequired) {
+    isSystemInAlarm = true; manualResetRequired = true;
+    digitalWrite(buzzerPin, HIGH); digitalWrite(relayPin, HIGH);
+    digitalWrite(redLed, HIGH); digitalWrite(greenLed, LOW);
+    Serial.println("!!! GAS DETECTED !!!");
+    bot.sendMessage(chatId, "🚨🚨🚨 УВАГА: ВИЯВЛЕНО ГАЗ!", "");
+  }
+
+  // Фізична кнопка
+  if (digitalRead(buttonPin) == LOW) {
+    delay(50); // антибрязк
+    if (manualResetRequired) clearAlarm("Physical Button");
+  }
+
+  // Автовимкнення тесту
+  if (isSystemInAlarm && testModeActive && millis() > testEndTime) {
+    clearAlarm("Auto-Timer");
+  }
+}
